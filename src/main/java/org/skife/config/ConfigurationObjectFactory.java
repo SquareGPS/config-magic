@@ -295,7 +295,7 @@ public class ConfigurationObjectFactory {
         return sb.toString();
     }
 
-    private static final class ConfigMagicSuperValue {
+    public static final class ConfigMagicSuperValue {
         private final Method method;
         private final String assignedFrom;
 
@@ -328,7 +328,7 @@ public class ConfigurationObjectFactory {
     }
 
 
-    private static final class ConfigMagicFixedValue {
+    public static final class ConfigMagicFixedValue {
         private final Method method;
         private final String assignedFrom;
         private final Object value;
@@ -370,7 +370,7 @@ public class ConfigurationObjectFactory {
     }
 
 
-    private static final class ConfigMagicMethodInterceptor {
+    public static final class ConfigMagicMethodInterceptor {
         private final Method method;
         private final ConfigSource config;
         private final String[] properties;
@@ -441,7 +441,7 @@ public class ConfigurationObjectFactory {
         }
     }
 
-    private static final class ConfigMagicBeanToString {
+    public static final class ConfigMagicBeanToString {
         private final List<Object> callbacks;
 
         private transient String toStringValue = null;
