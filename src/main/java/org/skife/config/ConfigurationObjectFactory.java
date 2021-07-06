@@ -10,12 +10,7 @@ import net.bytebuddy.matcher.ElementMatchers;
 import java.lang.annotation.Annotation;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.Properties;
+import java.util.*;
 import java.util.concurrent.Callable;
 
 import org.slf4j.Logger;
@@ -81,15 +76,15 @@ public class ConfigurationObjectFactory {
             }
         }
 
-        // Hook up a toString method that prints out the settings for that bean if possible.
-        final Method toStringMethod = findToStringMethod(configClass);
-        if (toStringMethod != null) {
-            List<Object> callbacks = new ArrayList<Object>(interceptors.values());
-            interceptors.put(toStringMethod, new ConfigMagicBeanToString(callbacks));
-        }
-
 
         DynamicType.Builder<T> builder = new ByteBuddy().subclass(configClass);
+
+        // Hook up a toString method that prints out the settings for that bean if possible
+        ConfigMagicBeanToString toStringInterceptor = new ConfigMagicBeanToString(interceptors.values());
+        builder = builder
+                .method(ElementMatchers.isToString())
+                .intercept(MethodDelegation.to(toStringInterceptor));
+
         for (Map.Entry<Method, Object> e : interceptors.entrySet()) {
             Object cb = e.getValue();
             if (cb != null) {
@@ -429,24 +424,13 @@ public class ConfigurationObjectFactory {
         }
     }
 
-    private Method findToStringMethod(final Class<?> clazz) {
-        try {
-            return clazz.getMethod("toString", new Class[]{});
-        } catch (NoSuchMethodException nsme) {
-            try {
-                return Object.class.getMethod("toString", new Class[]{});
-            } catch (NoSuchMethodException nsme2) {
-                throw new IllegalStateException("Could not intercept toString method!", nsme);
-            }
-        }
-    }
 
     public static final class ConfigMagicBeanToString {
-        private final List<Object> callbacks;
+        private final Collection<Object> callbacks;
 
         private transient String toStringValue = null;
 
-        private ConfigMagicBeanToString(final List<Object> callbacks) {
+        private ConfigMagicBeanToString(final Collection<Object> callbacks) {
             this.callbacks = callbacks;
         }
 
@@ -454,14 +438,16 @@ public class ConfigurationObjectFactory {
         public Object intercept() {
             if (toStringValue == null) {
                 final StringBuilder sb = new StringBuilder();
+                Iterator<Object> it = callbacks.iterator();
+                while (it.hasNext()) {
+                    Object cb = it.next();
+                    sb.append(cb.toString());
 
-                for (int i = 0; i < callbacks.size(); i++) {
-                    sb.append(callbacks.get(i).toString());
-
-                    if (i < callbacks.size() - 1) {
+                    if (it.hasNext()) {
                         sb.append("\n");
                     }
                 }
+
 
                 toStringValue = sb.toString();
             }
