@@ -1,6 +1,8 @@
 package org.skife.config;
 
 import net.bytebuddy.ByteBuddy;
+import net.bytebuddy.TypeCache;
+import net.bytebuddy.description.modifier.Visibility;
 import net.bytebuddy.dynamic.DynamicType;
 import net.bytebuddy.dynamic.loading.ClassLoadingStrategy;
 import net.bytebuddy.implementation.MethodDelegation;
@@ -8,6 +10,7 @@ import net.bytebuddy.implementation.bind.annotation.*;
 import net.bytebuddy.matcher.ElementMatchers;
 
 import java.lang.annotation.Annotation;
+import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.util.*;
@@ -16,8 +19,15 @@ import java.util.concurrent.Callable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import static java.util.Collections.synchronizedMap;
+
 public class ConfigurationObjectFactory {
     private static final Logger logger = LoggerFactory.getLogger(ConfigurationObjectFactory.class);
+    private static final TypeCache<Class<?>> typeCache = new TypeCache<Class<?>>(TypeCache.Sort.WEAK);
+    private static final String INTERCEPTORS_FIELD_NAME = "___interceptors___";
+    private static final Map<Class<?>, Field> interceptorsFieldsCache = synchronizedMap(new WeakHashMap<Class<?>, Field>());
+    private static final Object monitor = new Object();
+
     private final ConfigSource config;
     private final Bully bully;
 
@@ -43,8 +53,9 @@ public class ConfigurationObjectFactory {
         return internalBuild(configClass, null);
     }
 
-    private <T> T internalBuild(Class<T> configClass, Map<String, String> mappedReplacements) {
-        final Map<Method, Object> interceptors = new HashMap<Method, Object>();
+    @SuppressWarnings("unchecked")
+    private <T> T internalBuild(final Class<T> configClass, Map<String, String> mappedReplacements) {
+        final Map<Method, Interceptor> interceptors = new HashMap<Method, Interceptor>();
 
         // Now hook up the actual value interceptors.
         for (final Method method : configClass.getMethods()) {
@@ -77,36 +88,51 @@ public class ConfigurationObjectFactory {
         }
 
 
-        DynamicType.Builder<T> builder = new ByteBuddy().subclass(configClass);
-
-        // Hook up a toString method that prints out the settings for that bean if possible
-        ConfigMagicBeanToString toStringInterceptor = new ConfigMagicBeanToString(interceptors.values());
-        builder = builder
-                .method(ElementMatchers.isToString())
-                .intercept(MethodDelegation.to(toStringInterceptor));
-
-        for (Map.Entry<Method, Object> e : interceptors.entrySet()) {
-            Object cb = e.getValue();
-            if (cb != null) {
-                builder = builder
-                        .method(ElementMatchers.is(e.getKey()))
-                        .intercept(MethodDelegation.to(cb));
-            }
-        }
         try {
-            return builder
-                    .make()
-                    .load(getClass().getClassLoader(), ClassLoadingStrategy.Default.INJECTION)
-                    .getLoaded()
-                    .getDeclaredConstructor()
-                    .newInstance();
+            Class<?> proxyClass = typeCache.findOrInsert(configClass.getClassLoader(), configClass, new Callable<Class<?>>() {
+                @Override
+                public Class<?> call() throws Exception {
+                    ConfigMagicBeanToString toStringInterceptor = new ConfigMagicBeanToString();
+                    // Hook up a toString method that prints out the settings for that bean if possible
+                    DynamicType.Builder<T> builder = new ByteBuddy()
+                            .subclass(configClass)
+                            .defineField(INTERCEPTORS_FIELD_NAME, Map.class, Visibility.PUBLIC)
+                            .method(ElementMatchers.isToString())
+                            .intercept(MethodDelegation.to(toStringInterceptor));
+
+                    for (Map.Entry<Method, Interceptor> e : interceptors.entrySet()) {
+                        Object cb = e.getValue();
+                        if (cb != null) {
+                            builder = builder
+                                    .method(ElementMatchers.is(e.getKey()))
+                                    .intercept(MethodDelegation.to(Interceptor.class));
+                        }
+                    }
+                    return builder
+                            .make()
+                            .load(getClass().getClassLoader(), ClassLoadingStrategy.Default.INJECTION)
+                            .getLoaded();
+                }
+            }, monitor);
+            T instance = (T) proxyClass.newInstance();
+            Field interceptorsField = interceptorsFieldsCache.get(proxyClass);
+            if (interceptorsField == null) {
+                interceptorsField = proxyClass.getField(INTERCEPTORS_FIELD_NAME);
+                interceptorsFieldsCache.put(configClass, interceptorsField);
+            }
+
+            interceptorsField.set(instance, interceptors);
+            return instance;
         } catch (Exception e) {
+            if (e instanceof RuntimeException) {
+                throw (RuntimeException)e;
+            }
             throw new RuntimeException(e);
         }
     }
 
-    private Object buildSimple(Method method, Config annotation,
-                               Map<String, String> mappedReplacements, ConfigReplacements mapAnnotation) {
+    private Interceptor buildSimple(Method method, Config annotation,
+                                    Map<String, String> mappedReplacements, ConfigReplacements mapAnnotation) {
         String assignedFrom = null;
         String[] propertyNames = new String[0];
         String value = null;
@@ -207,7 +233,7 @@ public class ConfigurationObjectFactory {
         return propertyName;
     }
 
-    private Object buildParameterized(Method method, Config annotation) {
+    private Interceptor buildParameterized(Method method, Config annotation) {
         String defaultValue = null;
 
         final boolean hasDefault = method.isAnnotationPresent(Default.class);
@@ -290,7 +316,24 @@ public class ConfigurationObjectFactory {
         return sb.toString();
     }
 
-    public static final class ConfigMagicSuperValue {
+    static abstract class Interceptor {
+        @BindingPriority(9999)
+        @RuntimeType
+        static Object intercept(@FieldValue(INTERCEPTORS_FIELD_NAME) Map<Method, Interceptor> interceptors,
+                                @Origin Method method,
+                                @AllArguments Object[] args,
+                                @SuperCall(nullIfImpossible = true) Callable<Object> superCall,
+                                @StubValue Object stub) throws Exception {
+            Object res = interceptors.get(method).intercept(interceptors, args, superCall);
+            return res == null ? stub : res;
+        }
+
+        abstract Object intercept(Map<Method, Interceptor> handlers,
+                                  Object[] args,
+                                  Callable<Object> superCall) throws Exception;
+    }
+
+    static final class ConfigMagicSuperValue extends Interceptor {
         private final Method method;
         private final String assignedFrom;
 
@@ -300,9 +343,10 @@ public class ConfigurationObjectFactory {
             this.assignedFrom = assignedFrom;
         }
 
-        @RuntimeType
-        public Object intercept(@SuperCall Callable<?> zuper) throws Exception {
-            return zuper.call();
+
+        @Override
+        public Object intercept(Map<Method, Interceptor> interceptors, Object[] args, Callable<Object> superCall) throws Exception {
+            return superCall.call();
         }
 
         private transient String toStringValue = null;
@@ -323,7 +367,7 @@ public class ConfigurationObjectFactory {
     }
 
 
-    public static final class ConfigMagicFixedValue {
+    static final class ConfigMagicFixedValue extends Interceptor {
         private final Method method;
         private final String assignedFrom;
         private final Object value;
@@ -335,8 +379,9 @@ public class ConfigurationObjectFactory {
             this.value = value;
         }
 
-        @RuntimeType
-        public Object intercept() {
+
+        @Override
+        public Object intercept(Map<Method, Interceptor> interceptors, Object[] args, Callable<Object> superCall) throws Exception {
             return value;
         }
 
@@ -365,7 +410,7 @@ public class ConfigurationObjectFactory {
     }
 
 
-    public static final class ConfigMagicMethodInterceptor {
+    static final class ConfigMagicMethodInterceptor extends Interceptor {
         private final Method method;
         private final ConfigSource config;
         private final String[] properties;
@@ -387,10 +432,8 @@ public class ConfigurationObjectFactory {
             this.defaultValue = defaultValue;
         }
 
-
-        @RuntimeType
-        public Object intercept(@AllArguments Object[] args,
-                                @Origin Method method) {
+        @Override
+        public Object intercept(Map<Method, Interceptor> interceptors, Object[] args, Callable<Object> superCall) throws Exception {
             for (String property : properties) {
                 if (args.length == paramTokenList.size()) {
                     for (int i = 0; i < args.length; ++i) {
@@ -425,26 +468,25 @@ public class ConfigurationObjectFactory {
     }
 
 
-    public static final class ConfigMagicBeanToString {
-        private final Collection<Object> callbacks;
+    static final class ConfigMagicBeanToString extends Interceptor {
 
         private transient String toStringValue = null;
 
-        private ConfigMagicBeanToString(final Collection<Object> callbacks) {
-            this.callbacks = callbacks;
-        }
 
-        @RuntimeType
-        public Object intercept() {
+        @Override
+        public Object intercept(Map<Method, Interceptor> interceptors, Object[] args, Callable<Object> superCall) throws Exception {
+            Collection<Interceptor> callbacks = interceptors.values();
             if (toStringValue == null) {
                 final StringBuilder sb = new StringBuilder();
-                Iterator<Object> it = callbacks.iterator();
+                Iterator<Interceptor> it = callbacks.iterator();
                 while (it.hasNext()) {
                     Object cb = it.next();
-                    sb.append(cb.toString());
+                    if (cb != this) {
+                        sb.append(cb.toString());
 
-                    if (it.hasNext()) {
-                        sb.append("\n");
+                        if (it.hasNext()) {
+                            sb.append("\n");
+                        }
                     }
                 }
 

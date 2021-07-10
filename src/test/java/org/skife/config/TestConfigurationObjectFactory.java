@@ -80,6 +80,75 @@ public class TestConfigurationObjectFactory
         assertEquals(t.getName(), "world");
     }
 
+    @Test
+    public void testSameConfigObjectClassUsedForEachInstance() throws Exception
+    {
+        ConfigurationObjectFactory c = new ConfigurationObjectFactory(new Properties()
+        {{
+                setProperty("hello", "world");
+                setProperty("theValue", "value");
+            }});
+        Thing t = c.build(Thing.class);
+        Thing t2 = c.build(Thing.class);
+
+        assertEquals(t.getClass(), t2.getClass());
+    }
+
+    @Test
+    public void testSameConfigObjectClassUsedForEachInstanceEvenWithDifferentCOFs() throws Exception
+    {
+        ConfigurationObjectFactory c = new ConfigurationObjectFactory(new Properties()
+        {{
+                setProperty("hello", "world");
+                setProperty("theValue", "value");
+            }});
+
+        ConfigurationObjectFactory c2 = new ConfigurationObjectFactory(new Properties()
+        {{
+                setProperty("hello", "world");
+                setProperty("theValue", "value");
+            }});
+
+        Thing t = c.build(Thing.class);
+        Thing t2 = c2.build(Thing.class);
+
+        assertEquals(t.getClass(), t2.getClass());
+    }
+
+    @Test
+    public void testSameConfigObjectClassUsedForEachInstance2() throws Exception
+    {
+
+        ConfigurationObjectFactory c = new ConfigurationObjectFactory(new Properties()
+        {{
+                setProperty("t1.hello", "world");
+                setProperty("t1.value", "value");
+                setProperty("t2.hello", "brian");
+                setProperty("t2.value", "another-value");
+            }});
+        ThingParam t1 = c.buildWithReplacements(ThingParam.class, Collections.singletonMap("thing", "t1"));
+        ThingParam t2 = c.buildWithReplacements(ThingParam.class, Collections.singletonMap("thing", "t2"));
+
+
+        assertEquals(t1.getClass(), t2.getClass());
+
+        assertEquals("world", t1.getHello());
+        assertEquals("value", t1.getValue());
+
+        assertEquals("brian", t2.getHello());
+        assertEquals("another-value", t2.getValue());
+    }
+
+    private interface ThingParam
+    {
+
+        @Config("${thing}.hello")
+        String getHello();
+
+        @Config("${thing}.value")
+        String getValue();
+    }
+
 
     @Test
     public void testEnum() throws Exception
