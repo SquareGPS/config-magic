@@ -118,7 +118,7 @@ public class ConfigurationObjectFactory {
             Field interceptorsField = interceptorsFieldsCache.get(proxyClass);
             if (interceptorsField == null) {
                 interceptorsField = proxyClass.getField(INTERCEPTORS_FIELD_NAME);
-                interceptorsFieldsCache.put(configClass, interceptorsField);
+                interceptorsFieldsCache.put(proxyClass, interceptorsField);
             }
 
             interceptorsField.set(instance, interceptors);
