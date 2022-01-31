@@ -4,6 +4,7 @@ import net.bytebuddy.ByteBuddy;
 import net.bytebuddy.TypeCache;
 import net.bytebuddy.description.modifier.Visibility;
 import net.bytebuddy.dynamic.DynamicType;
+import net.bytebuddy.dynamic.loading.ClassInjector;
 import net.bytebuddy.dynamic.loading.ClassLoadingStrategy;
 import net.bytebuddy.implementation.MethodDelegation;
 import net.bytebuddy.implementation.bind.annotation.*;
@@ -11,6 +12,7 @@ import net.bytebuddy.matcher.ElementMatchers;
 
 import java.lang.annotation.Annotation;
 import java.lang.reflect.Field;
+import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.util.*;
@@ -110,7 +112,7 @@ public class ConfigurationObjectFactory {
                     }
                     return builder
                             .make()
-                            .load(getClass().getClassLoader(), ClassLoadingStrategy.Default.INJECTION)
+                            .load(getClass().getClassLoader(), resolveClassLoadingStrategy(configClass))
                             .getLoaded();
                 }
             }, monitor);
@@ -129,6 +131,24 @@ public class ConfigurationObjectFactory {
             }
             throw new RuntimeException(e);
         }
+    }
+
+    private ClassLoadingStrategy<ClassLoader> resolveClassLoadingStrategy(Class<?> targetClass) throws ClassNotFoundException, NoSuchMethodException, InvocationTargetException, IllegalAccessException {
+        ClassLoadingStrategy<ClassLoader> strategy;
+        if (ClassInjector.UsingLookup.isAvailable()) {
+            Class<?> methodHandles = Class.forName("java.lang.invoke.MethodHandles");
+            Object lookup = methodHandles.getMethod("lookup").invoke(null);
+            Method privateLookupIn = methodHandles.getMethod("privateLookupIn",
+                    Class.class,
+                    Class.forName("java.lang.invoke.MethodHandles$Lookup"));
+            Object privateLookup = privateLookupIn.invoke(null, targetClass, lookup);
+            strategy = ClassLoadingStrategy.UsingLookup.of(privateLookup);
+        } else if (ClassInjector.UsingReflection.isAvailable()) {
+            strategy = ClassLoadingStrategy.Default.INJECTION;
+        } else {
+            throw new IllegalStateException("No code generation strategy available");
+        }
+        return strategy;
     }
 
     private Interceptor buildSimple(Method method, Config annotation,
@@ -277,7 +297,7 @@ public class ConfigurationObjectFactory {
                     " declares config annotation but no field name!");
         }
 
-        return new ConfigMagicMethodInterceptor(method,
+        return new ConfigMagicParametrizedValue(method,
                 config,
                 annotationValues,
                 paramTokenList,
@@ -316,10 +336,10 @@ public class ConfigurationObjectFactory {
         return sb.toString();
     }
 
-    static abstract class Interceptor {
+    public static abstract class Interceptor {
         @BindingPriority(9999)
         @RuntimeType
-        static Object intercept(@FieldValue(INTERCEPTORS_FIELD_NAME) Map<Method, Interceptor> interceptors,
+        public static Object intercept(@FieldValue(INTERCEPTORS_FIELD_NAME) Map<Method, Interceptor> interceptors,
                                 @Origin Method method,
                                 @AllArguments Object[] args,
                                 @SuperCall(nullIfImpossible = true) Callable<Object> superCall,
@@ -328,12 +348,12 @@ public class ConfigurationObjectFactory {
             return res == null ? stub : res;
         }
 
-        abstract Object intercept(Map<Method, Interceptor> handlers,
+        protected abstract Object intercept(Map<Method, Interceptor> handlers,
                                   Object[] args,
                                   Callable<Object> superCall) throws Exception;
     }
 
-    static final class ConfigMagicSuperValue extends Interceptor {
+    public static final class ConfigMagicSuperValue extends Interceptor {
         private final Method method;
         private final String assignedFrom;
 
@@ -345,7 +365,7 @@ public class ConfigurationObjectFactory {
 
 
         @Override
-        public Object intercept(Map<Method, Interceptor> interceptors, Object[] args, Callable<Object> superCall) throws Exception {
+        protected Object intercept(Map<Method, Interceptor> interceptors, Object[] args, Callable<Object> superCall) throws Exception {
             return superCall.call();
         }
 
@@ -367,7 +387,7 @@ public class ConfigurationObjectFactory {
     }
 
 
-    static final class ConfigMagicFixedValue extends Interceptor {
+    public static final class ConfigMagicFixedValue extends Interceptor {
         private final Method method;
         private final String assignedFrom;
         private final Object value;
@@ -381,7 +401,7 @@ public class ConfigurationObjectFactory {
 
 
         @Override
-        public Object intercept(Map<Method, Interceptor> interceptors, Object[] args, Callable<Object> superCall) throws Exception {
+        protected Object intercept(Map<Method, Interceptor> interceptors, Object[] args, Callable<Object> superCall) throws Exception {
             return value;
         }
 
@@ -410,7 +430,7 @@ public class ConfigurationObjectFactory {
     }
 
 
-    static final class ConfigMagicMethodInterceptor extends Interceptor {
+    public static final class ConfigMagicParametrizedValue extends Interceptor {
         private final Method method;
         private final ConfigSource config;
         private final String[] properties;
@@ -418,7 +438,7 @@ public class ConfigurationObjectFactory {
         private final Object defaultValue;
         private final List<String> paramTokenList;
 
-        private ConfigMagicMethodInterceptor(final Method method,
+        private ConfigMagicParametrizedValue(final Method method,
                                              final ConfigSource config,
                                              final String[] properties,
                                              final List<String> paramTokenList,
@@ -433,7 +453,7 @@ public class ConfigurationObjectFactory {
         }
 
         @Override
-        public Object intercept(Map<Method, Interceptor> interceptors, Object[] args, Callable<Object> superCall) throws Exception {
+        protected Object intercept(Map<Method, Interceptor> interceptors, Object[] args, Callable<Object> superCall) {
             for (String property : properties) {
                 if (args.length == paramTokenList.size()) {
                     for (int i = 0; i < args.length; ++i) {
@@ -468,13 +488,13 @@ public class ConfigurationObjectFactory {
     }
 
 
-    static final class ConfigMagicBeanToString extends Interceptor {
+    public static final class ConfigMagicBeanToString extends Interceptor {
 
         private transient String toStringValue = null;
 
 
         @Override
-        public Object intercept(Map<Method, Interceptor> interceptors, Object[] args, Callable<Object> superCall) throws Exception {
+        protected Object intercept(Map<Method, Interceptor> interceptors, Object[] args, Callable<Object> superCall) {
             Collection<Interceptor> callbacks = interceptors.values();
             if (toStringValue == null) {
                 final StringBuilder sb = new StringBuilder();
