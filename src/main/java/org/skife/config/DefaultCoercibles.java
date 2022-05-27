@@ -237,7 +237,7 @@ final class DefaultCoercibles
 
     static final Coercer<Boolean> BOOLEAN_COERCER = new Coercer<Boolean>() {
         public Boolean coerce(final String value) {
-            return value != null ? Boolean.valueOf(value) : null;
+            return value != null ? Boolean.valueOf(value.trim()) : null;
         }
     };
 
