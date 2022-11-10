@@ -20,6 +20,7 @@ import java.util.concurrent.Callable;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.slf4j.event.Level;
 
 import static java.util.Collections.synchronizedMap;
 
@@ -32,14 +33,26 @@ public class ConfigurationObjectFactory {
 
     private final ConfigSource config;
     private final Bully bully;
+    private final Logger buildLogger;
+    private final Level buildLogLevel;
 
     public ConfigurationObjectFactory(Properties props) {
-        this(new SimplePropertyConfigSource(props));
+        this(new SimplePropertyConfigSource(props), LoggerFactory.getLogger(ConfigurationObjectFactory.class), Level.INFO);
+    }
+
+    public ConfigurationObjectFactory(Properties props, Logger buildLogger, Level buildLogLevel) {
+        this(new SimplePropertyConfigSource(props), buildLogger, buildLogLevel);
     }
 
     public ConfigurationObjectFactory(ConfigSource config) {
+        this(config, LoggerFactory.getLogger(ConfigurationObjectFactory.class), Level.INFO);
+    }
+
+    public ConfigurationObjectFactory(ConfigSource config, Logger buildLogger, Level buildLogLevel) {
         this.config = config;
         this.bully = new Bully();
+        this.buildLogger = buildLogger;
+        this.buildLogLevel = buildLogLevel;
     }
 
     public void addCoercible(final Coercible<?> coercible) {
@@ -127,7 +140,7 @@ public class ConfigurationObjectFactory {
             return instance;
         } catch (Exception e) {
             if (e instanceof RuntimeException) {
-                throw (RuntimeException)e;
+                throw (RuntimeException) e;
             }
             throw new RuntimeException(e);
         }
@@ -178,7 +191,7 @@ public class ConfigurationObjectFactory {
                 // First value found wins
                 if (value != null) {
                     assignedFrom = "property: '" + propertyName + "'";
-                    logger.info("Assigning value [{}] for [{}] on [{}#{}()]",
+                    buildLog("Assigning value [{}] for [{}] on [{}#{}()]",
                             new Object[]{value, propertyName, method.getDeclaringClass().getName(), method.getName()});
                     break;
                 }
@@ -192,7 +205,7 @@ public class ConfigurationObjectFactory {
 
             if (value != null) {
                 assignedFrom = "@ConfigReplacements: key '" + key + "'";
-                logger.info("Assigning mappedReplacement value [{}] for [{}] on [{}#{}()]",
+                buildLog("Assigning mappedReplacement value [{}] for [{}] on [{}#{}()]",
                         new Object[]{value, key, method.getDeclaringClass().getName(), method.getName()});
             }
         }
@@ -219,17 +232,17 @@ public class ConfigurationObjectFactory {
                 value = method.getAnnotation(Default.class).value();
                 assignedFrom = "annotation: @Default";
 
-                logger.info("Assigning default value [{}] for {} on [{}#{}()]",
+                buildLog("Assigning default value [{}] for {} on [{}#{}()]",
                         new Object[]{value, propertyNames, method.getDeclaringClass().getName(), method.getName()});
             } else if (hasDefaultNull) {
-                logger.info("Assigning null default value for {} on [{}#{}()]",
+                buildLog("Assigning null default value for {} on [{}#{}()]",
                         new Object[]{propertyNames, method.getDeclaringClass().getName(), method.getName()});
                 assignedFrom = "annotation: @DefaultNull";
             } else {
                 // Final try: Is the method is actually callable?
                 if (!Modifier.isAbstract(method.getModifiers())) {
                     assignedFrom = "method: '" + method.getName() + "()'";
-                    logger.info("Using method itself for {} on [{}#{}()]",
+                    buildLog("Using method itself for {} on [{}#{}()]",
                             new Object[]{propertyNames, method.getDeclaringClass().getName(), method.getName()});
                     return new ConfigMagicSuperValue(method, assignedFrom);
                 } else {
@@ -242,6 +255,26 @@ public class ConfigurationObjectFactory {
 
         final Object finalValue = bully.coerce(method.getGenericReturnType(), value, method.getAnnotation(Separator.class));
         return new ConfigMagicFixedValue(method, assignedFrom, finalValue);
+    }
+
+    private void buildLog(String format, Object... arguments) {
+        switch (buildLogLevel) {
+            case TRACE:
+                buildLogger.trace(format, arguments);
+                break;
+            case DEBUG:
+                buildLogger.debug(format, arguments);
+                break;
+            case INFO:
+                buildLogger.info(format, arguments);
+                break;
+            case WARN:
+                buildLogger.warn(format, arguments);
+                break;
+            case ERROR:
+                buildLogger.error(format, arguments);
+                break;
+        }
     }
 
     private String applyReplacements(String propertyName, Map<String, String> mappedReplacements) {
@@ -340,17 +373,17 @@ public class ConfigurationObjectFactory {
         @BindingPriority(9999)
         @RuntimeType
         public static Object intercept(@FieldValue(INTERCEPTORS_FIELD_NAME) Map<Method, Interceptor> interceptors,
-                                @Origin Method method,
-                                @AllArguments Object[] args,
-                                @SuperCall(nullIfImpossible = true) Callable<Object> superCall,
-                                @StubValue Object stub) throws Exception {
+                                       @Origin Method method,
+                                       @AllArguments Object[] args,
+                                       @SuperCall(nullIfImpossible = true) Callable<Object> superCall,
+                                       @StubValue Object stub) throws Exception {
             Object res = interceptors.get(method).intercept(interceptors, args, superCall);
             return res == null ? stub : res;
         }
 
         protected abstract Object intercept(Map<Method, Interceptor> handlers,
-                                  Object[] args,
-                                  Callable<Object> superCall) throws Exception;
+                                            Object[] args,
+                                            Callable<Object> superCall) throws Exception;
     }
 
     public static final class ConfigMagicSuperValue extends Interceptor {
@@ -461,7 +494,7 @@ public class ConfigurationObjectFactory {
                     }
                     String value = config.getString(property);
                     if (value != null) {
-                        logger.info("Assigning value [{}] for [{}] on [{}#{}()]",
+                        logger.debug("Assigning value [{}] for [{}] on [{}#{}()]",
                                 new Object[]{value, property, method.getDeclaringClass().getName(), method.getName()});
                         return bully.coerce(method.getGenericReturnType(), value, method.getAnnotation(Separator.class));
                     }
@@ -469,7 +502,7 @@ public class ConfigurationObjectFactory {
                     throw new IllegalStateException("Argument list doesn't match @Param list");
                 }
             }
-            logger.info("Assigning default value [{}] for {} on [{}#{}()]",
+            logger.debug("Assigning default value [{}] for {} on [{}#{}()]",
                     new Object[]{defaultValue, properties, method.getDeclaringClass().getName(), method.getName()});
             return defaultValue;
         }

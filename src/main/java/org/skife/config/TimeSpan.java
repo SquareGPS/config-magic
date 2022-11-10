@@ -35,7 +35,7 @@ public class TimeSpan
 
     public TimeSpan(String spec)
     {
-        Matcher m = SPLIT.matcher(spec);
+        Matcher m = SPLIT.matcher(spec.trim());
         if (!m.matches()) {
             throw new IllegalArgumentException(String.format("%s is not a valid time spec", spec));
         }
