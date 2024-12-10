@@ -253,7 +253,9 @@ public class ConfigurationObjectFactory {
             }
         }
 
-        final Object finalValue = bully.coerce(method.getGenericReturnType(), value, method.getAnnotation(Separator.class));
+        final Object finalValue = value == null && hasDefaultNull
+                ? value
+                : bully.coerce(method.getGenericReturnType(), value, method.getAnnotation(Separator.class));
         return new ConfigMagicFixedValue(method, assignedFrom, finalValue);
     }
 
